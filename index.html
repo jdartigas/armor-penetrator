@@ -447,7 +447,7 @@
   ];
 
   const state = {
-    phase:'aim', turn:0, wind:0, projectiles:[], beams:[], booms:[], fires:[], clouds:[], burns:[],
+    phase:'aim', turn:0, wind:0, projectiles:[], mines:[], beams:[], booms:[], fires:[], clouds:[], burns:[],
     winner:null, terrain:new Float32Array(W), dirtShade:new Float32Array(W),
     tanks:[], particles:[], stars:[], aiTimer:0, pendingSplits:0,
     time:0, shake:0
@@ -592,7 +592,7 @@
   }
   function newRound(){
     generateTerrain(); if(typeof rebuildGround==='function') rebuildGround(); placeTanks(); makeStars();
-    state.phase='aim'; state.turn=0; state.winner=null; state.projectiles=[]; state.booms=[]; state.fires=[]; state.burns=[]; state.particles=[]; state.clouds=[]; state.pendingSplits=0; if(typeof clearRubble==='function') clearRubble();
+    state.phase='aim'; state.turn=0; state.winner=null; state.projectiles=[]; state.mines=[]; state.beams=[]; state.booms=[]; state.fires=[]; state.burns=[]; state.particles=[]; state.clouds=[]; state.pendingSplits=0; if(typeof clearRubble==='function') clearRubble();
     gust(); setMsg('Pick a weapon (1–7). Space to fire.'); renderRack(); syncHud();
   }
   function tankSlope(tank){
@@ -789,7 +789,7 @@
   function raiseDirt(x,y,r){
     for(let i=Math.max(0,Math.floor(x-r-2)); i<Math.min(W,Math.ceil(x+r+2)); i++){
       const dx=i-x; if(Math.abs(dx)>r) continue;
-      const lift=Math.sqrt(Math.max(0,1-(dx/r)*(dx/r)))*r*0.65;
+      const lift=Math.sqrt(Math.max(0,1-(dx/r)*(dx/r)))*r*1.15;
       state.terrain[i]=clamp(state.terrain[i]-lift, 40, GROUND_BASE);
     }
   }
@@ -854,7 +854,8 @@ function applyDamage(t, raw, pierce=0){
       if(dealt>0) state.floaters.push({x:tk.x, y:tk.y-36, t:Math.round(dealt), life:50});
       tk.y=heightAt(tk.x)-9;
     });
-    carve(x,y,r);
+    if(wep.dirtball) raiseDirt(x,y,r);
+    else carve(x,y,r);
     if(typeof rebuildGround==='function') rebuildGround();
     state.tanks.forEach(tk=>{ tk.y=heightAt(tk.x)-9; });
     spray(x,y,wep.color,wep.id==='nuke'?70:18);
@@ -866,7 +867,6 @@ function applyDamage(t, raw, pierce=0){
       emit(x,y-28,'ember', mega?28:16);
       emit(x,y-18,'smoke', mega?40:20);
     }
-    if(wep.dirtball) raiseDirt(x,y,r);
     if(wep.quake){
       state.shake=Math.max(state.shake,18);
       state.tanks.forEach(o=>{ if(o.alive) applyDamage(o, wep.dmg*(1-Math.min(1,Math.abs(o.x-x)/420))); });
@@ -932,6 +932,19 @@ function applyDamage(t, raw, pierce=0){
     else if(roll<0.60 && me.ammo.nuke>0 && dist<220) choice='nuke';
     else if(roll<0.62 && me.ammo.tsar>0 && dist<200) choice='tsar';
     if(!me.ammo[choice]) choice='missile';
+    if(me.fuel>8){
+      let dir=0;
+      if(state.mines && state.mines.some(m=>Math.abs(m.x-me.x)<40)) dir = (foe.x>me.x?-1:1);
+      else if(Math.random()<0.62) dir = Math.random()<0.5?-1:1;
+      if(dir){
+        const steps=rand(18,55);
+        for(let s=0;s<steps && me.fuel>0;s++){
+          me.x=clamp(me.x+dir*0.6, 18, W-18);
+          me.y=heightAt(me.x)-9;
+          me.fuel=Math.max(0, me.fuel-0.22);
+        }
+      }
+    }
     const wep=wepById(choice);
     const ghost={x:foe.x+rand(-90,90), y:foe.y, alive:true};
     const aim=aimAt(me, ghost, wep);
@@ -970,13 +983,9 @@ function applyDamage(t, raw, pierce=0){
     for(const p of state.projectiles){
       p.trail.push({x:p.x,y:p.y}); if(p.trail.length>(p.wep.tracer?80:36)) p.trail.shift();
       if(p.mineArmed){
-        p.y=heightAt(p.x)-2;
-        let boom=false;
-        for(const tk of state.tanks){
-          if(tk.alive && Math.abs(tk.x-p.x)<18) boom=true;
-        }
-        if(boom){ explodeAt(p.x,p.y,p.wep,p.fromSplit); continue; }
-        next.push(p); continue;
+        if(!state.mines) state.mines=[];
+        state.mines.push({x:p.x,y:heightAt(p.x)-2,wep:p.wep});
+        continue;
       }
       if(p.rolling){
         Physics.roll(p);
@@ -991,8 +1000,9 @@ function applyDamage(t, raw, pierce=0){
           }
         }
         if(p.wep.mine && p.y>=heightAt(p.x)-2){
-          p.mineArmed=true; p.x=clamp(p.x,4,W-4); p.y=heightAt(p.x)-2; p.vx=0; p.vy=0;
-          next.push(p); continue;
+          if(!state.mines) state.mines=[];
+          state.mines.push({x:clamp(p.x,4,W-4), y:heightAt(p.x)-2, wep:p.wep});
+          continue;
         }
         if((p.wep.mirv||p.wep.cluster||p.wep.flak) && !p.peaked && p.vy>0){
           p.peaked=true;
@@ -1222,6 +1232,14 @@ function applyDamage(t, raw, pierce=0){
       }
       ctx.restore();
     }
+    if(state.mines){
+      for(const m of state.mines){
+        ctx.fillStyle='#6ad080';
+        ctx.beginPath(); ctx.arc(m.x, m.y-2, 5, 0, Math.PI*2); ctx.fill();
+        ctx.strokeStyle='rgba(106,208,128,0.5)'; ctx.lineWidth=2;
+        ctx.beginPath(); ctx.arc(m.x, m.y-2, 8+Math.sin(state.time*0.15)*1.5, 0, Math.PI*2); ctx.stroke();
+      }
+    }
     state.tanks.forEach(drawTank);
     if(state.floaters){
       for(let i=state.floaters.length-1;i>=0;i--){
@@ -1328,6 +1346,19 @@ function applyDamage(t, raw, pierce=0){
     }
     for(let i=state.clouds.length-1;i>=0;i--){ const c=state.clouds[i]; c.life--; if(c.life%8===0) emit(c.x+rand(-12,12), c.y-(1-c.life/c.max)*70-24,'smoke',1); if(c.life<=0) state.clouds.splice(i,1); }
     if(state.phase==='fly') stepProjectiles();
+    if(state.mines && state.mines.length){
+      for(let i=state.mines.length-1;i>=0;i--){
+        const m=state.mines[i];
+        m.y=heightAt(m.x)-2;
+        for(const tk of state.tanks){
+          if(tk.alive && Math.abs(tk.x-m.x)<20){
+            explodeAt(m.x,m.y,m.wep,false);
+            state.mines.splice(i,1);
+            break;
+          }
+        }
+      }
+    }
     for(let i=state.booms.length-1;i>=0;i--){ state.booms[i].life--; if(state.booms[i].life<=0) state.booms.splice(i,1); }
     if(state.beams && state.beams.length){
       for(let i=state.beams.length-1;i>=0;i--){
