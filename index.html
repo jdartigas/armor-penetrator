@@ -428,6 +428,7 @@
   const WEPS = [
     { id:'baby',    name:'Baby Missile', ammo:10, r:16, dmg:95, color:'#ffe08a', tip:'Small warhead. Cheap chip damage.' },
     { id:'missile', name:'Missile',      ammo:99, r:28, dmg:150, color:'#ffd24a', tip:'Workhorse. Two solid hits should finish a tank.' },
+    { id:'heavy',   name:'Heavy Missile',ammo:6,  r:34, dmg:195, color:'#c8a050', heavy:true, pierce:0.25, tip:'Slow and fat. Less wind, harder punch, 25% shield leak.' },
     { id:'nuke',    name:'Nuke',         ammo:2,  r:58, dmg:280,color:'#fff6c0', mushroom:true, tip:'Big blast. Punches through a lot of shield.' },
     { id:'tsar',    name:'Tsar Bomba',   ammo:1,  r:92, dmg:420,color:'#fffce0', mushroom:true, mega:true, tip:'Mega nuke. Ignores most shielding. A hit should end the tank.' },
     { id:'funky',   name:'Funky Bomb',   ammo:3,  r:22, dmg:100, color:'#ff80d0', split:3, tip:'Explodes, then tosses 3 baby charges.' },
@@ -497,6 +498,7 @@
     launch(id,x=200){ const pan=this.panFromX(x), rate=0.94+Math.random()*0.12; this.clack();
       if(id==='baby'){ this.playSample('shot_01',{gain:.7,pan,rate:rate*1.15}); this.whoosh({start:1400,end:400,dur:.16,peak:.18}); }
       else if(id==='missile'){ this.playSample('cannon_01',{gain:.85,pan,rate}); this.whoosh({start:1100,end:280,dur:.28,peak:.28}); }
+      else if(id==='heavy'){ this.playSample('cannon_fire',{gain:1.0,pan,rate:rate*0.72,wet:.3}); this.whoosh({start:700,end:160,dur:.4,peak:.34}); }
       else if(id==='nuke'){ this.playSample('cannon_fire',{gain:1.05,pan,rate:.85,wet:.35}); this.whoosh({start:700,end:120,dur:.45,peak:.4}); }
       else if(id==='roller'){ this.playSample('cannon_05',{gain:.75,pan,rate:.9}); this.whoosh({start:600,end:180,dur:.22,peak:.24}); }
       else if(id==='funky'){ this.playSample('fw_01',{gain:.8,pan,rate:1.05}); this.whoosh({start:1600,end:500,dur:.2,peak:.22}); }
@@ -506,6 +508,7 @@
     boom(id,x=500){ const pan=this.panFromX(x), j=0.92+Math.random()*0.16;
       if(id==='baby'){ this.playSample('bang_08',{gain:.7,pan,rate:j*1.1}); this.explosion({scale:.28,thump:70,bodyFreq:700,bodyEnd:160}); }
       else if(id==='missile'){ this.playSample('bang_01',{gain:.95,pan,rate:j}); this.explosion({scale:.45,thump:52,bodyFreq:380,bodyEnd:90,rumbleRel:.55}); }
+      else if(id==='heavy'){ this.playSample('bang_01',{gain:1.05,pan,rate:j*0.72}); this.playSample('bang_06',{gain:.55,pan,rate:.68}); this.explosion({scale:.7,thump:36,bodyFreq:240,bodyEnd:70,rumbleLp:100,rumbleRel:1.0}); }
       else if(id==='nuke'){ this.playSample('cannon_02',{gain:1.15,pan,rate:.78*j,wet:.45}); this.playSample('bang_06',{gain:.7,pan,rate:.7}); this.explosion({scale:.85,thump:38,bodyFreq:220,rumbleLp:90,rumbleRel:1.4}); }
       else if(id==='roller'){ this.playSample('bang_06',{gain:.8,pan,rate:j}); this.explosion({scale:.35,thump:64}); }
       else if(id==='funky'){ this.playSample('fw_05',{gain:.85,pan,rate:j*1.05}); this.explosion({scale:.32,thump:80,bodyFreq:900}); }
@@ -513,7 +516,46 @@
       else { this.playSample('bang_08',{gain:.35,pan,rate:1.4}); this.explosion({scale:.14,thump:110,bodyFreq:1600}); }
     },
     split(){ this.explosion({scale:.28,thump:90,bodyFreq:1200}); },
-    death(){ this.explosion({scale:.55,thump:48,bodyFreq:250}); },
+    death(){
+      const kick=(scale)=>{
+        this.playSample('bang_01',{gain:0.7*scale, rate:0.85+Math.random()*0.12});
+        this.playSample('bang_08',{gain:0.45*scale, rate:0.9});
+        this.explosion({scale:scale*0.7, thump:48, bodyFreq:360, bodyEnd:80, rumbleRel:0.7, crackRel:0.16});
+      };
+      kick(1.15);
+      setTimeout(()=>kick(0.95), 160);
+      setTimeout(()=>kick(0.75), 320);
+      setTimeout(()=>kick(0.55), 480);
+    },
+    startEngine(){
+      if(this.muted||this._eng) return;
+      const ac=this.ensure(), {g}=this.bus(0.12);
+      const n=this.noiseSrc('brown',true);
+      const lp=this.filt('lowpass',280);
+      const eg=ac.createGain(); eg.gain.value=0.0001;
+      const osc=ac.createOscillator(); osc.type='sawtooth'; osc.frequency.value=46;
+      const og=ac.createGain(); og.gain.value=0.04;
+      n.connect(lp); lp.connect(eg); eg.connect(g);
+      osc.connect(og); og.connect(g);
+      n.start(); osc.start();
+      eg.gain.linearRampToValueAtTime(0.22, ac.currentTime+0.08);
+      this._eng={n,osc,eg};
+    },
+    stopEngine(){
+      const e=this._eng; if(!e) return;
+      try{
+        const ac=this.ensure();
+        e.eg.gain.cancelScheduledValues(ac.currentTime);
+        e.eg.gain.linearRampToValueAtTime(0.0001, ac.currentTime+0.12);
+        setTimeout(()=>{ try{e.n.stop(); e.osc.stop();}catch(err){} }, 140);
+      }catch(err){}
+      this._eng=null;
+    },
+    engineBurst(sec){
+      this.startEngine();
+      clearTimeout(this._engT);
+      this._engT=setTimeout(()=>this.stopEngine(), Math.max(120, sec*1000));
+    },
     startRoll(p){ if(this.muted||this.rollers.has(p)) return; const {g}=this.bus(0.08); const n=this.noiseSrc('brown',true); const lp=this.filt('lowpass',420); const eg=this.ensure().createGain(); eg.gain.value=.2; n.connect(lp);lp.connect(eg);eg.connect(g); n.start(); this.rollers.set(p,{n}); },
     stopRoll(p){ const n=this.rollers.get(p); if(!n) return; try{n.n.stop();}catch(e){} this.rollers.delete(p); },
     setMuted(m){ this.muted=m; if(this.master) this.master.gain.value=m?0:0.7; }
@@ -797,6 +839,7 @@
     if(!t.alive) return;
     t.alive=false; t.shield=0; t.armor=0;
     SFX.death();
+    setMsg('TANK DOWN');
     const x=t.x, y=t.y-4;
     state.booms.push({x,y,r:52,life:150,max:150,color:t.color});
     state.clouds.push({x,y,life:720,max:720,r:42});
@@ -938,6 +981,7 @@ function applyDamage(t, raw, pierce=0){
       else if(Math.random()<0.62) dir = Math.random()<0.5?-1:1;
       if(dir){
         const steps=rand(18,55);
+        SFX.engineBurst(steps*0.016);
         for(let s=0;s<steps && me.fuel>0;s++){
           me.x=clamp(me.x+dir*0.6, 18, W-18);
           me.y=heightAt(me.x)-9;
@@ -957,7 +1001,7 @@ function applyDamage(t, raw, pierce=0){
     // no rigid bodies, constraints, or contact solver — just what artillery needs.
     stepBody(p, dt=1){
       const g = G * (p.wep && p.wep.heavy ? 1.65 : 1) * dt;
-      p.vx += state.wind * WIND_K * dt;
+      p.vx += state.wind * WIND_K * dt * (p.wep && p.wep.heavy ? 0.45 : 1);
       p.vy += g;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -1260,7 +1304,8 @@ function applyDamage(t, raw, pierce=0){
       ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(p.x,p.y,10,0,Math.PI*2); ctx.fill();
       ctx.fillStyle=p.wep.color; ctx.save(); ctx.translate(p.x,p.y);
       const id=p.wep.id;
-      if(id==='anvil'){ ctx.fillRect(-4,-3,8,6); }
+      if(id==='heavy'){ ctx.fillRect(-5,-4,10,8); }
+      else if(id==='anvil'){ ctx.fillRect(-4,-3,8,6); }
       else if(id==='mirv'||id==='cluster'){ ctx.rotate(Math.PI/4); ctx.fillRect(-3,-3,6,6); }
       else if(id==='digger'){ ctx.beginPath(); ctx.moveTo(0,4); ctx.lineTo(-4,-3); ctx.lineTo(4,-3); ctx.fill(); }
       else if(id==='dirtball'){ ctx.beginPath(); ctx.ellipse(0,0,5,3.5,0,0,Math.PI*2); ctx.fill(); }
@@ -1406,8 +1451,10 @@ function applyDamage(t, raw, pierce=0){
     if(keys['ArrowRight']) t.angle=clamp(t.angle-0.7,5,90);
     if(keys['ArrowUp']) t.power=clamp(t.power+0.55,5,100);
     if(keys['ArrowDown']) t.power=clamp(t.power-0.55,5,100);
+    const driving=((keys['a']||keys['A'])||(keys['d']||keys['D']))&&t.fuel>0;
     if((keys['a']||keys['A'])&&t.fuel>0){ t.x=clamp(t.x-0.6,18,W-18); t.y=heightAt(t.x)-9; t.fuel=Math.max(0,t.fuel-0.22); }
     if((keys['d']||keys['D'])&&t.fuel>0){ t.x=clamp(t.x+0.6,18,W-18); t.y=heightAt(t.x)-9; t.fuel=Math.max(0,t.fuel-0.22); }
+    if(driving) SFX.startEngine(); else SFX.stopEngine();
     syncHud();
   },16);
   canvas.addEventListener('click',ev=>{
